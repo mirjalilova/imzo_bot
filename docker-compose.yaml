@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  imzoai-bot:
+    build: .
+    container_name: imzoai-bot
+    restart: always
+    env_file:
+      - .env
+    networks:
+      - imzoai-net
+
+networks:
+  imzoai-net:
+    driver: bridge
