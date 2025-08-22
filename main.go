@@ -303,6 +303,7 @@ func (b *Bot) handleQuestion(ctx context.Context, chatID int64, token, question 
 		return
 	}
 
+	fmt.Println(resp)
 	if resp.StatusCode != http.StatusOK {
 		b.reply(chatID, fmt.Sprintf("Unexpected status from /ask: %s", resp.Status))
 		return
@@ -313,27 +314,29 @@ func (b *Bot) handleQuestion(ctx context.Context, chatID int64, token, question 
 		b.reply(chatID, fmt.Sprintf("JSON xatosi (/ask): %v", err))
 		return
 	}
+	fmt.Println("aaaaaaaaaaaaa", ok.Message)
 
 	if strings.TrimSpace(ok.Message) != "" {
 		b.reply(chatID, ok.Message)
-		return
 	}
 
+	time.Sleep(10 * time.Second)
 	// Empty message => tell user it's being processed, then poll for final answer.
-	b.reply(chatID, "⌛ Savolingiz qabul qilindi. Tez orada javob qaytadi — ishlov berilmoqda…")
+	// b.reply(chatID, "⌛ Savolingiz qabul qilindi. Tez orada javob qaytadi — ishlov berilmoqda…")
 	go b.pollFinalAndReply(chatID, token, ok.ID)
 }
 
 func (b *Bot) pollFinalAndReply(chatID int64, userToken, id string) {
+	log.Printf("[DEBUG] Polling started for chatID=%d id=%s", chatID, id)
+
 	ctx, cancel := context.WithTimeout(context.Background(), b.cfg.PollTimeout)
 	defer cancel()
 
-	endpoint := strings.TrimRight(b.cfg.GatewayBase, "/") + "/get/gpt/responce"
+	endpoint := strings.TrimRight(b.cfg.ImzoAPIBase, "/") + "/get/gpt/responce"
 	q := url.Values{"id": {id}}
 
-	authHeader := b.cfg.GatewayAuthBearer
-	if strings.TrimSpace(authHeader) == "" {
-		// Fallback to the user's token if a gateway token is not provided
+	authHeader := strings.TrimSpace(b.cfg.GatewayAuthBearer)
+	if authHeader == "" {
 		authHeader = userToken
 	}
 
@@ -343,32 +346,46 @@ func (b *Bot) pollFinalAndReply(chatID int64, userToken, id string) {
 	for {
 		select {
 		case <-ctx.Done():
-			b.reply(chatID, "⏱️ Kutish vaqti tugadi. Iltimos, yana bir bor urinib ko'ring yoki savolni yangilang.")
+			log.Println("[DEBUG] Polling timeout expired")
+			// b.reply(chatID, "⏱️ Kutish vaqti tugadi. Iltimos, yana urinib ko'ring yoki savolni yangilang.")
 			return
+
 		case <-ticker.C:
-			req, _ := http.NewRequest(http.MethodGet, endpoint+"?"+q.Encode(), nil)
+			log.Println("[DEBUG] Sending poll request...")
+			req, err := http.NewRequest(http.MethodGet, endpoint+"?"+q.Encode(), nil)
+			if err != nil {
+				log.Printf("poll request create error: %v", err)
+				continue
+			}
 			req.Header.Set("Accept", "application/json")
 			req.Header.Set("Authorization", authHeader)
 
 			resp, err := b.cli.Do(req)
 			if err != nil {
-				log.Printf("poll error: %v", err)
+				log.Printf("poll request error: %v", err)
 				continue
 			}
+
 			func() {
 				defer resp.Body.Close()
 				if resp.StatusCode != http.StatusOK {
-					log.Printf("poll status: %s", resp.Status)
+					log.Printf("poll status not OK: %s", resp.Status)
 					return
 				}
+
 				var fr finalResp
 				if err := json.NewDecoder(resp.Body).Decode(&fr); err != nil {
-					log.Printf("poll decode: %v", err)
+					log.Printf("poll decode error: %v", err)
 					return
 				}
+
+				log.Printf("[DEBUG] Poll response: %+v", fr)
+
 				if strings.TrimSpace(fr.Response) != "" {
 					b.reply(chatID, fr.Response)
-					cancel() // stop polling
+					log.Println("[DEBUG] Final response received, stopping polling")
+					cancel() // ctx cancel qilinadi
+					return   // funksiya shu joyda tugaydi
 				}
 			}()
 		}
